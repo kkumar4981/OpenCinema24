@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>OpenCinema24 - Android Cinema Camera UI</title>
+  <style>
+    :root {
+      --bg-oled: #05070b;
+      --panel-bg: rgba(15, 23, 42, 0.85);
+      --accent-cyan: #38bdf8;
+      --accent-red: #ef4444;
+      --accent-green: #10b981;
+      --accent-yellow: #f59e0b;
+      --text-muted: #64748b;
+      --border-color: rgba(51, 65, 85, 0.6);
+    }
+    * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+    body, html {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      background: var(--bg-oled); color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      overflow: hidden;
+    }
+    #cinema-viewport {
+      position: relative; width: 100vw; height: 100vh;
+      display: flex; flex-direction: column; justify-content: space-between;
+      background: #000;
+    }
+    canvas#glSurface {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      object-fit: cover; z-index: 1;
+    }
+    /* Anamorphic 2.39:1 Letterbox Overlay */
+    .letterbox-bars {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 2; display: none; flex-direction: column; justify-content: space-between;
+    }
+    .letterbox-bars.active { display: flex; }
+    .letterbox-bar { width: 100%; height: 10.5%; background: rgba(0, 0, 0, 0.95); border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .letterbox-bar.bottom { border-bottom: none; border-top: 1px solid rgba(255,255,255,0.1); }
+
+    /* Crosshair & Framing Grid */
+    .framing-grid {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 3; display: none;
+    }
+    .framing-grid.active { display: block; }
+    .framing-line-h1 { position: absolute; top: 33.33%; width: 100%; height: 1px; background: rgba(255,255,255,0.15); }
+    .framing-line-h2 { position: absolute; top: 66.66%; width: 100%; height: 1px; background: rgba(255,255,255,0.15); }
+    .framing-line-v1 { position: absolute; left: 33.33%; height: 100%; width: 1px; background: rgba(255,255,255,0.15); }
+    .framing-line-v2 { position: absolute; left: 66.66%; height: 100%; width: 1px; background: rgba(255,255,255,0.15); }
+    .center-crosshair {
+      position: absolute; top: 50%; left: 50%; width: 24px; height: 24px;
+      transform: translate(-50%, -50%);
+    }
+    .center-crosshair::before { content:''; position: absolute; top: 11px; left: 0; width: 24px; height: 2px; background: rgba(56, 189, 248, 0.6); }
+    .center-crosshair::after  { content:''; position: absolute; top: 0; left: 11px; width: 2px; height: 24px; background: rgba(56, 189, 248, 0.6); }
+
+    /* Top Status Bar */
+    .top-status-bar {
+      position: relative; z-index: 10;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0.6rem 1.25rem;
+      background: linear-gradient(180deg, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 100%);
+    }
+    .status-left { display: flex; align-items: center; gap: 1rem; }
+    .rec-indicator {
+      display: flex; align-items: center; gap: 0.5rem;
+      background: rgba(0,0,0,0.5); padding: 4px 10px; border-radius: 6px;
+      border: 1px solid var(--border-color); font-weight: bold; font-size: 0.85rem;
+    }
+    .rec-dot {
+      width: 10px; height: 10px; border-radius: 50%; background: #64748b;
+    }
+    .recording .rec-dot {
+      background: var(--accent-red);
+      box-shadow: 0 0 10px var(--accent-red);
+      animation: blink 1s infinite;
+    }
+    @keyframes blink { 50% { opacity: 0.3; } }
+    .timecode { font-family: monospace; font-size: 1.1rem; color: #f8fafc; letter-spacing: 1px; }
+
+    .assist-toggles { display: flex; gap: 0.5rem; }
+    .assist-btn {
+      background: rgba(15, 23, 42, 0.7); color: #94a3b8;
+      border: 1px solid var(--border-color); border-radius: 6px;
+      padding: 5px 12px; font-size: 0.75rem; font-weight: 700;
+      letter-spacing: 0.5px; cursor: pointer; transition: all 0.2s ease;
+      backdrop-filter: blur(8px);
+    }
+    .assist-btn:hover { color: #f8fafc; border-color: #64748b; }
+    .assist-btn.active {
+      color: #000; font-weight: 800;
+      background: var(--accent-cyan); border-color: var(--accent-cyan);
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.5);
+    }
+    .assist-btn.active.peaking {
+      background: #00ff66; border-color: #00ff66;
+      box-shadow: 0 0 12px rgba(0, 255, 102, 0.6);
+    }
+    .assist-btn.active.zebra {
+      background: #facc15; border-color: #facc15;
+      box-shadow: 0 0 12px rgba(250, 204, 21, 0.6);
+    }
+
+    /* Left Pro Focus Wheel */
+    .left-focus-dock {
+      position: absolute; left: 1.25rem; top: 50%; transform: translateY(-50%);
+      z-index: 10; display: flex; align-items: center; gap: 0.75rem;
+    }
+    .focus-wheel-container {
+      width: 44px; height: 260px; background: rgba(15, 23, 42, 0.75);
+      border: 1px solid var(--border-color); border-radius: 22px;
+      display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+      padding: 10px 0; backdrop-filter: blur(8px); cursor: pointer;
+    }
+    .wheel-thumb {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: radial-gradient(circle, #38bdf8 0%, #0284c7 100%);
+      border: 2px solid #ffffff; box-shadow: 0 0 10px rgba(56, 189, 248, 0.6);
+      transition: transform 0.05s ease;
+    }
+    .focus-labels {
+      display: flex; flex-direction: column; justify-content: space-between;
+      height: 260px; font-size: 0.7rem; font-weight: 700; color: #64748b;
+    }
+    .focus-labels span.active { color: var(--accent-cyan); text-shadow: 0 0 8px var(--accent-cyan); }
+
+    /* Right Trigger & Audio Dock */
+    .right-control-dock {
+      position: absolute; right: 1.5rem; top: 50%; transform: translateY(-50%);
+      z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 1.5rem;
+    }
+    /* Stereo VU Meters */
+    .audio-meters-strip {
+      display: flex; gap: 4px; height: 120px;
+      background: rgba(0,0,0,0.6); padding: 4px; border-radius: 6px;
+      border: 1px solid var(--border-color);
+    }
+    .meter-channel {
+      width: 8px; height: 100%; background: #1e293b; border-radius: 4px;
+      display: flex; flex-direction: column-reverse; overflow: hidden;
+    }
+    .meter-fill {
+      width: 100%; height: 0%;
+      background: linear-gradient(0deg, #10b981 60%, #eab308 85%, #ef4444 100%);
+      transition: height 0.04s ease;
+    }
+    /* Cinema Record Trigger */
+    .rec-trigger-btn {
+      width: 72px; height: 72px; border-radius: 50%;
+      background: #0f172a; border: 3px solid #f8fafc;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,0.8);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .rec-trigger-btn:hover { transform: scale(1.05); }
+    .rec-inner-core {
+      width: 52px; height: 52px; border-radius: 50%;
+      background: radial-gradient(circle, #ef4444 0%, #b91c1c 100%);
+      box-shadow: 0 0 15px rgba(239, 68, 68, 0.5);
+      transition: all 0.2s ease;
+    }
+    .recording .rec-trigger-btn { border-color: var(--accent-red); }
+    .recording .rec-inner-core {
+      width: 28px; height: 28px; border-radius: 6px; /* Square stop button */
+      background: var(--accent-red);
+      box-shadow: 0 0 20px var(--accent-red);
+    }
+
+    /* Bottom Cinema Control Dashboard */
+    .bottom-cinema-dashboard {
+      position: relative; z-index: 10;
+      background: linear-gradient(0deg, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.4) 75%, rgba(0,0,0,0) 100%);
+      padding: 1rem 1.5rem 1.25rem 1.5rem;
+      display: flex; justify-content: space-between; align-items: flex-end;
+    }
+    .param-group { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .cinema-pill {
+      background: rgba(15, 23, 42, 0.75); border: 1px solid var(--border-color);
+      border-radius: 8px; padding: 6px 12px; cursor: pointer;
+      display: flex; flex-direction: column; min-width: 78px;
+      backdrop-filter: blur(10px); transition: all 0.15s ease;
+    }
+    .cinema-pill:hover { border-color: #64748b; background: rgba(30, 41, 59, 0.85); }
+    .cinema-pill.active {
+      border-color: var(--accent-cyan); background: rgba(14, 165, 233, 0.15);
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.25);
+    }
+    .pill-label { font-size: 0.65rem; font-weight: 700; color: var(--text-muted); letter-spacing: 0.5px; }
+    .pill-val { font-size: 0.95rem; font-weight: 800; color: #f8fafc; margin-top: 2px; }
+
+    /* Modal selector drawer for pill parameters */
+    .selector-drawer {
+      position: absolute; bottom: 85px; left: 1.5rem;
+      background: rgba(15, 23, 42, 0.95); border: 1px solid var(--border-color);
+      border-radius: 10px; padding: 0.6rem; display: none; gap: 0.5rem;
+      backdrop-filter: blur(16px); z-index: 20; box-shadow: 0 10px 25px rgba(0,0,0,0.8);
+    }
+    .selector-drawer.open { display: flex; }
+    .drawer-option {
+      background: #1e293b; color: #cbd5e1; border: 1px solid #334155;
+      padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: 700;
+      cursor: pointer;
+    }
+    .drawer-option:hover, .drawer-option.selected {
+      background: var(--accent-cyan); color: #000; border-color: var(--accent-cyan);
+    }
+    
+    /* Device HUD info */
+    .hud-info {
+      font-size: 0.75rem; color: #64748b; text-align: right; font-family: monospace;
+    }
+    .hud-info strong { color: #cbd5e1; }
+  </style>
+</head>
+<body>
+
+<div id="cinema-viewport">
+  <!-- WebGL Camera Surface with Shader Processing -->
+  <canvas id="glSurface"></canvas>
+
+  <!-- Cinema 2.39:1 Letterbox Bars -->
+  <div class="letterbox-bars" id="letterboxOverlay">
+    <div class="letterbox-bar"></div>
+    <div class="letterbox-bar bottom"></div>
+  </div>
+
+  <!-- Cinema Framing Grid -->
+  <div class="framing-grid" id="framingGrid">
+    <div class="framing-line-h1"></div>
+    <div class="framing-line-h2"></div>
+    <div class="framing-line-v1"></div>
+    <div class="framing-line-v2"></div>
+    <div class="center-crosshair"></div>
+  </div>
+
+  <!-- Top Cinema Status Bar -->
+  <div class="top-status-bar">
+    <div class="status-left">
+      <div class="rec-indicator" id="recBadge">
+        <div class="rec-dot"></div>
+        <span id="recStateText">STANDBY</span>
+      </div>
+      <div class="timecode" id="timecodeDisplay">00:00:00:00</div>
+    </div>
+
+    <!-- Live Assist Shaders Toggles -->
+    <div class="assist-toggles">
+      <button class="assist-btn peaking" id="btnPeak" onclick="toggleAssist('peaking')">PEAK</button>
+      <button class="assist-btn zebra" id="btnZebra" onclick="toggleAssist('zebra')">ZEBRA</button>
+      <button class="assist-btn" id="btnFalse" onclick="toggleAssist('false_color')">FALSE COLOR</button>
+      <button class="assist-btn" id="btnLog" onclick="toggleAssist('log')">LOG / LUT</button>
+      <button class="assist-btn" id="btnGrid" onclick="toggleFramingGrid()">GRID</button>
+      <button class="assist-btn" id="btnScope" onclick="toggleLetterbox()">2.39:1</button>
+    </div>
+  </div>
+
+  <!-- Left Pro Focus Lens Wheel -->
+  <div class="left-focus-dock">
+    <div class="focus-wheel-container" id="focusWheelTrack">
+      <div class="wheel-thumb" id="focusThumb"></div>
+    </div>
+    <div class="focus-labels">
+      <span id="lblInf" class="active">INF ∞</span>
+      <span>3.0m</span>
+      <span>1.5m</span>
+      <span>0.7m</span>
+      <span>0.3m</span>
+      <span>MACRO</span>
+    </div>
+  </div>
+
+  <!-- Right Trigger & Audio Dock -->
+  <div class="right-control-dock">
+    <div class="audio-meters-strip">
+      <div class="meter-channel"><div class="meter-fill" id="vuLeft"></div></div>
+      <div class="meter-channel"><div class="meter-fill" id="vuRight"></div></div>
+    </div>
+
+    <div class="rec-trigger-btn" id="recTrigger" onclick="toggleRecording()">
+      <div class="rec-inner-core"></div>
+    </div>
+  </div>
+
+  <!-- Parameter Drawer Options -->
+  <div class="selector-drawer" id="paramDrawer"></div>
+
+  <!-- Bottom Cinema Control Dashboard -->
+  <div class="bottom-cinema-dashboard">
+    <div class="param-group">
+      <div class="cinema-pill active" onclick="openParamDrawer('fps')">
+        <span class="pill-label">FPS</span>
+        <span class="pill-val" id="valFps">24.000</span>
+      </div>
+      <div class="cinema-pill active" onclick="openParamDrawer('shutter')">
+        <span class="pill-label">SHUTTER</span>
+        <span class="pill-val" id="valShutter">180.0°</span>
+      </div>
+      <div class="cinema-pill active" onclick="openParamDrawer('iso')">
+        <span class="pill-label">ISO</span>
+        <span class="pill-val" id="valIso">100</span>
+      </div>
+      <div class="cinema-pill active" onclick="openParamDrawer('wb')">
+        <span class="pill-label">WB</span>
+        <span class="pill-val" id="valWb">5600K</span>
+      </div>
+      <div class="cinema-pill" onclick="openParamDrawer('format')">
+        <span class="pill-label">CODEC</span>
+        <span class="pill-val" id="valFormat">HEVC 10-BIT</span>
+      </div>
+    </div>
+
+    <div class="hud-info">
+      <div>BATTERY: <strong>89%</strong> • USB MIC: <strong>48kHz</strong></div>
+      <div>STORAGE: <strong>142 GB REMAINING</strong> (2h 48m)</div>
+      <div style="color: #38bdf8; margin-top: 2px;">BITRATE: <strong>120.4 Mbps</strong></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Setup Canvas & WebGL Shaders
+  const canvas = document.getElementById('glSurface');
+  const gl = canvas.getContext('webgl');
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  let activeAssist = 'none'; // 'none', 'peaking', 'zebra', 'false_color', 'log'
+
+  const vsSource = `
+    attribute vec2 aPosition;
+    varying vec2 vTexCoord;
+    void main() {
+      vTexCoord = (aPosition + 1.0) * 0.5;
+      vTexCoord.y = 1.0 - vTexCoord.y;
+      gl_Position = vec4(aPosition, 0.0, 1.0);
+    }
+  `;
+
+  const fsSource = `
+    precision mediump float;
+    uniform sampler2D uTexture;
+    uniform int uAssistMode; // 0=none, 1=peaking, 2=zebra, 3=false_color, 4=log
+    uniform float uTime;
+    varying vec2 vTexCoord;
+
+    float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+    vec3 falseColor(float y) {
+      if (y < 0.05) return vec3(0.5, 0.0, 0.5);      // Purple
+      if (y < 0.20) return vec3(0.0, 0.0, 1.0);      // Blue
+      if (y <= 0.45) return vec3(0.0, 0.9, 0.0);     // Green (18% Grey)
+      if (y <= 0.70) return vec3(1.0, 0.6, 0.8);     // Pink (Skin tones)
+      if (y < 0.90) return vec3(1.0, 0.5, 0.0);      // Orange
+      return vec3(1.0, 0.0, 0.0);                     // Red (Blown highlights)
+    }
+
+    void main() {
+      vec4 color = texture2D(uTexture, vTexCoord);
+      float y = luma(color.rgb);
+
+      if (uAssistMode == 1) { // Focus Peaking
+        vec2 step = vec2(1.0 / 800.0, 1.0 / 600.0);
+        float right = luma(texture2D(uTexture, vTexCoord + vec2(step.x, 0.0)).rgb);
+        float bottom = luma(texture2D(uTexture, vTexCoord + vec2(0.0, step.y)).rgb);
+        float grad = abs(y - right) + abs(y - bottom);
+        if (grad > 0.07) {
+          gl_FragColor = vec4(0.0, 1.0, 0.4, 1.0); // Neon Green Sharp Edge
+        } else {
+          gl_FragColor = color;
+        }
+      } else if (uAssistMode == 2) { // Zebra Stripes (>75% highlight)
+        if (y > 0.75) {
+          float stripe = mod(gl_FragCoord.x + gl_FragCoord.y - uTime * 28.0, 16.0);
+          if (stripe < 8.0) gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+          else gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+        } else {
+          gl_FragColor = color;
+        }
+      } else if (uAssistMode == 3) { // False Color
+        gl_FragColor = vec4(falseColor(y), 1.0);
+      } else if (uAssistMode == 4) { // Flat Log Gamma curve
+        vec3 logC = pow(color.rgb, vec3(0.65)) * 0.8 + 0.1;
+        gl_FragColor = vec4(logC, 1.0);
+      } else {
+        gl_FragColor = color;
+      }
+    }
+  `;
+
+  function compileShader(src, type) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    return s;
+  }
+
+  const program = gl.createProgram();
+  gl.attachShader(program, compileShader(vsSource, gl.VERTEX_SHADER));
+  gl.attachShader(program, compileShader(fsSource, gl.FRAGMENT_SHADER));
+  gl.linkProgram(program);
+  gl.useProgram(program);
+
+  const quadBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,  1, -1, -1,  1,
+    -1,  1,  1, -1,  1,  1
+  ]), gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(program, 'aPosition');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const uAssistLoc = gl.getUniformLocation(program, 'uAssistMode');
+  const uTimeLoc = gl.getUniformLocation(program, 'uTime');
+
+  // Video Texture (Webcam or Fallback Cinema Studio Scene)
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+  const videoElement = document.createElement('video');
+  videoElement.autoplay = true;
+  videoElement.muted = true;
+  videoElement.playsInline = true;
+
+  let hasWebcam = false;
+  navigator.mediaDevices?.getUserMedia({ video: { width: 1280, height: 720 } })
+    .then(stream => {
+      videoElement.srcObject = stream;
+      videoElement.play();
+      hasWebcam = true;
+    })
+    .catch(() => {
+      // Fallback synthetic cinema scene
+      generateStudioFallback();
+    });
+
+  const offscreen = document.createElement('canvas');
+  offscreen.width = 1280;
+  offscreen.height = 720;
+  const offCtx = offscreen.getContext('2d');
+
+  function generateStudioFallback() {
+    let t = 0;
+    setInterval(() => {
+      t += 0.03;
+      // Dark moody cinema lighting
+      const grad = offCtx.createLinearGradient(0, 0, 1280, 720);
+      grad.addColorStop(0, '#0f172a');
+      grad.addColorStop(1, '#020617');
+      offCtx.fillStyle = grad;
+      offCtx.fillRect(0, 0, 1280, 720);
+
+      // Overexposed highlight lamp (for Zebra testing)
+      const lamp = offCtx.createRadialGradient(950, 180, 10, 950, 180, 160);
+      lamp.addColorStop(0, '#ffffff');
+      lamp.addColorStop(0.3, '#fef08a');
+      lamp.addColorStop(1, 'transparent');
+      offCtx.fillStyle = lamp;
+      offCtx.fillRect(0, 0, 1280, 720);
+
+      // Actor silhouette / subject with sharp focus edges (for Peaking test)
+      offCtx.fillStyle = '#0ea5e9';
+      offCtx.beginPath();
+      offCtx.arc(520, 380, 140, 0, Math.PI * 2);
+      offCtx.fill();
+      offCtx.lineWidth = 8;
+      offCtx.strokeStyle = '#ffffff';
+      offCtx.stroke();
+
+      offCtx.fillStyle = '#ffffff';
+      offCtx.font = 'bold 42px monospace';
+      offCtx.fillText('OPENCINEMA 24', 360, 390);
+      offCtx.font = '20px monospace';
+      offCtx.fillStyle = '#94a3b8';
+      offCtx.fillText('24.000 FPS • 180° SHUTTER • 120 Mbps', 360, 430);
+    }, 33);
+  }
+
+  const startTime = performance.now();
+
+  function renderLoop() {
+    const elapsed = (performance.now() - startTime) / 1000.0;
+    gl.uniform1f(uTimeLoc, elapsed);
+
+    let modeVal = 0;
+    if (activeAssist === 'peaking') modeVal = 1;
+    else if (activeAssist === 'zebra') modeVal = 2;
+    else if (activeAssist === 'false_color') modeVal = 3;
+    else if (activeAssist === 'log') modeVal = 4;
+    gl.uniform1i(uAssistLoc, modeVal);
+
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    if (hasWebcam && videoElement.readyState >= 2) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoElement);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, offscreen);
+    }
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Audio VU meters animation
+    const vuL = 55 + Math.sin(elapsed * 9) * 35;
+    const vuR = 52 + Math.cos(elapsed * 8) * 32;
+    document.getElementById('vuLeft').style.height = `${Math.max(5, Math.min(100, vuL))}%`;
+    document.getElementById('vuRight').style.height = `${Math.max(5, Math.min(100, vuR))}%`;
+
+    requestAnimationFrame(renderLoop);
+  }
+  renderLoop();
+
+  // Assist Toggles
+  function toggleAssist(mode) {
+    activeAssist = (activeAssist === mode) ? 'none' : mode;
+    document.getElementById('btnPeak').classList.toggle('active', activeAssist === 'peaking');
+    document.getElementById('btnZebra').classList.toggle('active', activeAssist === 'zebra');
+    document.getElementById('btnFalse').classList.toggle('active', activeAssist === 'false_color');
+    document.getElementById('btnLog').classList.toggle('active', activeAssist === 'log');
+  }
+
+  function toggleFramingGrid() {
+    const g = document.getElementById('framingGrid');
+    const active = g.classList.toggle('active');
+    document.getElementById('btnGrid').classList.toggle('active', active);
+  }
+
+  function toggleLetterbox() {
+    const b = document.getElementById('letterboxOverlay');
+    const active = b.classList.toggle('active');
+    document.getElementById('btnScope').classList.toggle('active', active);
+  }
+
+  // Recording Engine & Timecode Clock
+  let isRecording = false;
+  let recSeconds = 0;
+  let recInterval = null;
+
+  function toggleRecording() {
+    isRecording = !isRecording;
+    const vp = document.getElementById('cinema-viewport');
+    const badge = document.getElementById('recBadge');
+    const stateText = document.getElementById('recStateText');
+
+    vp.classList.toggle('recording', isRecording);
+
+    if (isRecording) {
+      stateText.innerText = 'REC 24P';
+      recSeconds = 0;
+      recInterval = setInterval(() => {
+        recSeconds++;
+        const hrs = String(Math.floor(recSeconds / 3600)).padStart(2, '0');
+        const mins = String(Math.floor((recSeconds % 3600) / 60)).padStart(2, '0');
+        const secs = String(recSeconds % 60).padStart(2, '0');
+        const frames = String(Math.floor(Math.random() * 24)).padStart(2, '0');
+        document.getElementById('timecodeDisplay').innerText = `${hrs}:${mins}:${secs}:${frames}`;
+      }, 1000);
+    } else {
+      stateText.innerText = 'STANDBY';
+      clearInterval(recInterval);
+      document.getElementById('timecodeDisplay').innerText = '00:00:00:00';
+    }
+  }
+
+  // Left Wheel Focus Dragging
+  const focusThumb = document.getElementById('focusThumb');
+  const wheelTrack = document.getElementById('focusWheelTrack');
+  let isDraggingFocus = false;
+
+  wheelTrack.addEventListener('pointerdown', (e) => {
+    isDraggingFocus = true;
+    updateFocusFromPointer(e);
+  });
+  window.addEventListener('pointermove', (e) => {
+    if (isDraggingFocus) updateFocusFromPointer(e);
+  });
+  window.addEventListener('pointerup', () => { isDraggingFocus = false; });
+
+  function updateFocusFromPointer(e) {
+    const rect = wheelTrack.getBoundingClientRect();
+    const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+    focusThumb.style.transform = `translateY(${y - 16}px)`;
+  }
+
+  // Parameter Drawer Management
+  const drawerData = {
+    fps: ['23.976', '24.000', '25.000', '30.000', '60.000', '120.0'],
+    shutter: ['180.0° (1/48s)', '1/96s', '1/120s', '1/250s', '1/500s'],
+    iso: ['50', '100', '200', '400', '800', '1600', '3200'],
+    wb: ['3200K (Tungsten)', '4300K (Fluorescent)', '5600K (Daylight)', '6500K (Cloudy)'],
+    format: ['HEVC 10-BIT (120 Mbps)', 'H.264 HIGH (100 Mbps)', 'PRORES 422 HQ (220 Mbps)']
+  };
+
+  let activeParam = null;
+  function openParamDrawer(param) {
+    const drawer = document.getElementById('paramDrawer');
+    if (activeParam === param && drawer.classList.contains('open')) {
+      drawer.classList.remove('open');
+      activeParam = null;
+      return;
+    }
+    activeParam = param;
+    drawer.innerHTML = '';
+    drawerData[param].forEach(opt => {
+      const btn = document.createElement('div');
+      btn.className = 'drawer-option';
+      btn.innerText = opt;
+      btn.onclick = () => selectParam(param, opt);
+      drawer.appendChild(btn);
+    });
+    drawer.classList.add('open');
+  }
+
+  function selectParam(param, value) {
+    if (param === 'fps') document.getElementById('valFps').innerText = value.split(' ')[0];
+    if (param === 'shutter') document.getElementById('valShutter').innerText = value.split(' ')[0];
+    if (param === 'iso') document.getElementById('valIso').innerText = value;
+    if (param === 'wb') document.getElementById('valWb').innerText = value.split(' ')[0];
+    if (param === 'format') document.getElementById('valFormat').innerText = value.split(' ')[0];
+    document.getElementById('paramDrawer').classList.remove('open');
+    activeParam = null;
+  }
+</script>
+
+</body>
+</html>
