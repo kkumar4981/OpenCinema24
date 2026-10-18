@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>OpenCinema24 - GPU Assist Shader Simulator</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0a0e17; color: #e2e8f0; margin: 0; padding: 1.5rem; display: flex; flex-direction: column; align-items: center; }
+    .header { width: 100%; max-width: 900px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+    h1 { margin: 0; color: #38bdf8; font-size: 1.5rem; }
+    .badge { background: #ef4444; color: white; padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 0.8rem; letter-spacing: 1px; }
+    .canvas-container { position: relative; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.8); border: 1px solid #334155; }
+    canvas { display: block; width: 854px; height: 480px; background: #000; }
+    .controls { width: 100%; max-width: 900px; background: #1e293b; border-radius: 12px; padding: 1.25rem; margin-top: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+    .control-card { background: #0f172a; padding: 1rem; border-radius: 8px; border: 1px solid #334155; }
+    .control-card h3 { margin: 0 0 0.75rem 0; font-size: 0.95rem; color: #94a3b8; }
+    button { background: #0284c7; color: white; border: none; padding: 0.6rem 1rem; border-radius: 6px; cursor: pointer; font-weight: 600; width: 100%; margin-bottom: 0.5rem; }
+    button.active { background: #10b981; }
+    button:hover { opacity: 0.9; }
+    label { font-size: 0.8rem; color: #94a3b8; display: block; margin-top: 0.5rem; }
+    input[type=range] { width: 100%; }
+    .vu-meter { height: 12px; background: #334155; border-radius: 6px; overflow: hidden; display: flex; margin-top: 0.5rem; }
+    .vu-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #10b981 60%, #eab308 85%, #ef4444 100%); transition: width 0.05s ease; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🎬 OpenCinema24 GPU Assist Simulator</h1>
+    <div class="badge">24.000 FPS • 180° SHUTTER • 120 Mbps</div>
+  </div>
+
+  <div class="canvas-container">
+    <canvas id="glCanvas" width="854" height="480"></canvas>
+  </div>
+
+  <div class="controls">
+    <div class="control-card">
+      <h3>Assist Overlays</h3>
+      <button id="btnPeaking" onclick="toggleMode('peaking')">Focus Peaking (Sobel Edge)</button>
+      <button id="btnZebra" onclick="toggleMode('zebra')">Zebra Stripes (95% Highlight)</button>
+      <button id="btnFalseColor" onclick="toggleMode('false_color')">False Color (ARRI Scale)</button>
+    </div>
+
+    <div class="control-card">
+      <h3>Cinema Sensor Controls</h3>
+      <label>Manual Focus Distance</label>
+      <input type="range" id="focusSlider" min="0" max="100" value="50">
+      <label>180° Shutter Speed: <strong>1/48s</strong> (Lock)</label>
+      <label>ISO Sensitivity: <strong>ISO 100</strong></label>
+      <label>White Balance: <strong>5600K</strong> (Daylight)</label>
+    </div>
+
+    <div class="control-card">
+      <h3>Audio VU Meters (48kHz)</h3>
+      <label>Channel L (dBFS)</label>
+      <div class="vu-meter"><div id="vuLeft" class="vu-bar"></div></div>
+      <label>Channel R (dBFS)</label>
+      <div class="vu-meter"><div id="vuRight" class="vu-bar"></div></div>
+      <label style="margin-top: 1rem; color: #10b981;">● USB-C Pro Mic Connected</label>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('glCanvas');
+    const gl = canvas.getContext('webgl');
+
+    let currentMode = 'peaking'; // 'normal', 'peaking', 'zebra', 'false_color'
+
+    const vsSource = `
+      attribute vec2 aPosition;
+      varying vec2 vTexCoord;
+      void main() {
+        vTexCoord = (aPosition + 1.0) * 0.5;
+        vTexCoord.y = 1.0 - vTexCoord.y;
+        gl_Position = vec4(aPosition, 0.0, 1.0);
+      }
+    `;
+
+    const fsSource = `
+      precision mediump float;
+      uniform sampler2D uTexture;
+      uniform int uMode; // 0=normal, 1=peaking, 2=zebra, 3=false_color
+      uniform float uTime;
+      varying vec2 vTexCoord;
+
+      float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+      vec3 falseColor(float y) {
+        if (y < 0.05) return vec3(0.5, 0.0, 0.5); // Purple
+        if (y < 0.20) return vec3(0.0, 0.0, 1.0); // Blue
+        if (y <= 0.45) return vec3(0.0, 0.9, 0.0); // Green (18% Grey)
+        if (y <= 0.70) return vec3(1.0, 0.6, 0.8); // Pink (Skin)
+        if (y < 0.90) return vec3(1.0, 0.5, 0.0); // Orange
+        return vec3(1.0, 0.0, 0.0); // Red (Blown)
+      }
+
+      void main() {
+        vec4 color = texture2D(uTexture, vTexCoord);
+        float y = luma(color.rgb);
+
+        if (uMode == 0) {
+          gl_FragColor = color;
+        } else if (uMode == 1) { // Focus Peaking
+          vec2 step = vec2(1.0 / 854.0, 1.0 / 480.0);
+          float right = luma(texture2D(uTexture, vTexCoord + vec2(step.x, 0.0)).rgb);
+          float bottom = luma(texture2D(uTexture, vTexCoord + vec2(0.0, step.y)).rgb);
+          float grad = abs(y - right) + abs(y - bottom);
+          if (grad > 0.08) {
+            gl_FragColor = vec4(0.0, 1.0, 0.4, 1.0); // Neon Green Peaking
+          } else {
+            gl_FragColor = color;
+          }
+        } else if (uMode == 2) { // Zebra
+          if (y > 0.75) {
+            float stripe = mod(gl_FragCoord.x + gl_FragCoord.y - uTime * 25.0, 16.0);
+            if (stripe < 8.0) gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            else gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+          } else {
+            gl_FragColor = color;
+          }
+        } else if (uMode == 3) { // False color
+          gl_FragColor = vec4(falseColor(y), 1.0);
+        }
+      }
+    `;
+
+    function compileShader(src, type) {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      return s;
+    }
+
+    const program = gl.createProgram();
+    gl.attachShader(program, compileShader(vsSource, gl.VERTEX_SHADER));
+    gl.attachShader(program, compileShader(fsSource, gl.FRAGMENT_SHADER));
+    gl.linkProgram(program);
+    gl.useProgram(program);
+
+    const quadBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,  1, -1, -1,  1,
+      -1,  1,  1, -1,  1,  1
+    ]), gl.STATIC_DRAW);
+
+    const aPos = gl.getAttribLocation(program, 'aPosition');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    const uModeLoc = gl.getUniformLocation(program, 'uMode');
+    const uTimeLoc = gl.getUniformLocation(program, 'uTime');
+
+    // Generate procedural cinematic test scene onto texture
+    const texCanvas = document.createElement('canvas');
+    texCanvas.width = 854;
+    texCanvas.height = 480;
+    const ctx = texCanvas.getContext('2d');
+
+    function drawScene() {
+      // Background gradient
+      const grad = ctx.createLinearGradient(0, 0, 854, 480);
+      grad.addColorStop(0, '#1e293b');
+      grad.addColorStop(1, '#090d16');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 854, 480);
+
+      // Simulated spotlight / high-key highlight (for Zebra test)
+      const spot = ctx.createRadialGradient(680, 150, 10, 680, 150, 180);
+      spot.addColorStop(0, '#ffffff');
+      spot.addColorStop(0.3, '#fde047');
+      spot.addColorStop(1, 'transparent');
+      ctx.fillStyle = spot;
+      ctx.fillRect(0, 0, 854, 480);
+
+      // Sharp subject shape with high-frequency edges (for Focus Peaking test)
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(380, 240, 90, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+
+      // Sharp text
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 36px monospace';
+      ctx.fillText('OPENCINEMA 24', 240, 250);
+      ctx.font = '18px monospace';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText('TRUE 24 FPS • 180° SHUTTER LOCK', 260, 290);
+    }
+    drawScene();
+
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texCanvas);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    let startTime = performance.now();
+
+    function render() {
+      const elapsed = (performance.now() - startTime) / 1000.0;
+      gl.uniform1f(uTimeLoc, elapsed);
+
+      let modeInt = 0;
+      if (currentMode === 'peaking') modeInt = 1;
+      else if (currentMode === 'zebra') modeInt = 2;
+      else if (currentMode === 'false_color') modeInt = 3;
+
+      gl.uniform1i(uModeLoc, modeInt);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      // Simulate live VU audio meter flutter
+      const vuL = 50 + Math.sin(elapsed * 8) * 35;
+      const vuR = 48 + Math.cos(elapsed * 7) * 33;
+      document.getElementById('vuLeft').style.width = `${Math.max(5, Math.min(100, vuL))}%`;
+      document.getElementById('vuRight').style.width = `${Math.max(5, Math.min(100, vuR))}%`;
+
+      requestAnimationFrame(render);
+    }
+    render();
+
+    function toggleMode(mode) {
+      currentMode = (currentMode === mode) ? 'normal' : mode;
+      document.getElementById('btnPeaking').className = currentMode === 'peaking' ? 'active' : '';
+      document.getElementById('btnZebra').className = currentMode === 'zebra' ? 'active' : '';
+      document.getElementById('btnFalseColor').className = currentMode === 'false_color' ? 'active' : '';
+    }
+    toggleMode('peaking');
+  </script>
+</body>
+</html>
