@@ -20,20 +20,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleOwner
+import kotlinx.coroutines.delay
 
 @Composable
 fun CinemaCameraScreen() {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-
     var cameraRef by remember { mutableStateOf<Camera?>(null) }
     var isRecording by remember { mutableStateOf(false) }
     var activeAssist by remember { mutableStateOf("NONE") } // NONE, PEAK, ZEBRA, FALSE
@@ -50,7 +46,7 @@ fun CinemaCameraScreen() {
         if (isRecording) {
             timecodeSec = 0
             while (true) {
-                kotlinx.coroutines.delay(1000)
+                delay(1000)
                 timecodeSec++
             }
         }
@@ -81,7 +77,7 @@ fun CinemaCameraScreen() {
 
                         cameraProvider.unbindAll()
                         cameraRef = cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
+                            ctx as LifecycleOwner,
                             cameraSelector,
                             preview
                         )
@@ -127,14 +123,14 @@ fun CinemaCameraScreen() {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .border(2.dp, Color(0x8800FF66))
+                    .border(3.dp, Color(0xFF00FF66))
             )
         } else if (activeAssist == "FALSE") {
             // False Color IRE Heat Map Tint
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0x3300FF00), BlendMode.ColorDodge)
+                    .background(Color(0x3300FF00))
             )
         }
 
