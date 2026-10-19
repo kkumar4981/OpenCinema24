@@ -3,8 +3,6 @@ name: Build OpenCinema24 APK
 on:
   push:
     branches: [ "master", "main" ]
-  pull_request:
-    branches: [ "master", "main" ]
   workflow_dispatch:
 
 jobs:
@@ -20,16 +18,20 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: gradle
 
-    - name: Grant Execute Permission to Gradlew
-      run: chmod +x gradlew || true
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.7'
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --stacktrace
+      run: gradle assembleDebug --stacktrace
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: OpenCinema24-Debug-APK
-        path: app/build/outputs/apk/debug/app-debug.apk
+        path: app/build/outputs/apk/debug/*.apk
