@@ -1,7 +1,6 @@
 package org.opencinema24.ui
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.*
+import android.view.Surface
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,31 +15,40 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import org.opencinema24.camera.Camera2ManualController
+import org.opencinema24.gl.CinemaGLSurfaceView
+import org.opencinema24.gl.CinemaShaderRenderer
 
-/**
- * OpenCinema24 Jetpack Compose Cinema Camera Screen
- * 
- * Features:
- * - OLED True Black (#05070B) Theme
- * - Focus Peaking, False Color, Zebra Assist Toggles
- * - Manual Shutter, ISO, White Balance Rotary Pills
- * - Stereo VU Meters
- * - High-Tactile Cinema Record Trigger
- */
 @Composable
-fun CinemaCameraScreen() {
+fun CinemaCameraScreen(cameraController: Camera2ManualController) {
     var isRecording by remember { mutableStateOf(false) }
-    var activeAssist by remember { mutableStateOf("NONE") } // PEAKING, ZEBRA, FALSE_COLOR
+    var activeAssist by remember { mutableStateOf("NONE") }
+    var glViewRef by remember { mutableStateOf<CinemaGLSurfaceView?>(null) }
+    var timecode by remember { mutableStateOf("00:00:00:00") }
+
+    // Focus Slider State
+    var focusValue by remember { mutableFloatStateOf(0.0f) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF05070B))
+            .background(Color.Black)
     ) {
-        // 1. Camera Viewfinder (EGL Surface / TextureView)
-        Box(modifier = Modifier.fillMaxSize())
+        // 1. REAL OpenGL ES Camera Viewfinder (Full Screen)
+        AndroidView(
+            factory = { context ->
+                CinemaGLSurfaceView(context) { surfaceTexture ->
+                    val previewSurface = Surface(surfaceTexture)
+                    cameraController.openCamera(previewSurface)
+                }.also {
+                    glViewRef = it
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
 
-        // 2. Top Status & Assist Bar
+        // 2. Top Cinema Status Bar & Assist Shaders
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -49,7 +57,7 @@ fun CinemaCameraScreen() {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Rec Indicator & Timecode
+            // REC Indicator & Timecode
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
@@ -65,33 +73,53 @@ fun CinemaCameraScreen() {
                 )
             }
 
-            // Assist Toggles (PEAK, ZEBRA, FALSE COLOR)
+            // Real-Time GPU Assist Toggles (PEAK, ZEBRA, FALSE COLOR)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AssistChip(
                     text = "PEAK",
-                    isActive = activeAssist == "PEAKING",
+                    isActive = activeAssist == "PEAK",
                     activeColor = Color(0xFF00FF66)
                 ) {
-                    activeAssist = if (activeAssist == "PEAKING") "NONE" else "PEAKING"
+                    if (activeAssist == "PEAK") {
+                        activeAssist = "NONE"
+                        glViewRef?.renderer?.currentAssistMode = CinemaShaderRenderer.MODE_NORMAL
+                    } else {
+                        activeAssist = "PEAK"
+                        glViewRef?.renderer?.currentAssistMode = CinemaShaderRenderer.MODE_FOCUS_PEAKING
+                    }
                 }
+
                 AssistChip(
                     text = "ZEBRA",
                     isActive = activeAssist == "ZEBRA",
                     activeColor = Color(0xFFFACC15)
                 ) {
-                    activeAssist = if (activeAssist == "ZEBRA") "NONE" else "ZEBRA"
+                    if (activeAssist == "ZEBRA") {
+                        activeAssist = "NONE"
+                        glViewRef?.renderer?.currentAssistMode = CinemaShaderRenderer.MODE_NORMAL
+                    } else {
+                        activeAssist = "ZEBRA"
+                        glViewRef?.renderer?.currentAssistMode = CinemaShaderRenderer.MODE_ZEBRA
+                    }
                 }
+
                 AssistChip(
                     text = "FALSE",
-                    isActive = activeAssist == "FALSE_COLOR",
+                    isActive = activeAssist == "FALSE",
                     activeColor = Color(0xFF38BDF8)
                 ) {
-                    activeAssist = if (activeAssist == "FALSE_COLOR") "NONE" else "FALSE_COLOR"
+                    if (activeAssist == "FALSE") {
+                        activeAssist = "NONE"
+                        glViewRef?.renderer?.currentAssistMode = CinemaShaderRenderer.MODE_NORMAL
+                    } else {
+                        activeAssist = "FALSE"
+                        glViewRef?.renderer?.currentAssistMode = CinemaShaderRenderer.MODE_FALSE_COLOR
+                    }
                 }
             }
         }
 
-        // 3. Right Record Trigger
+        // 3. Right Record Trigger Button
         Box(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
@@ -103,7 +131,9 @@ fun CinemaCameraScreen() {
                     .clip(CircleShape)
                     .background(Color(0xFF0F172A))
                     .border(3.dp, if (isRecording) Color(0xFFEF4444) else Color.White, CircleShape)
-                    .clickable { isRecording = !isRecording },
+                    .clickable {
+                        isRecording = !isRecording
+                    },
                 contentAlignment = Alignment.Center
             ) {
                 Box(
@@ -115,7 +145,7 @@ fun CinemaCameraScreen() {
             }
         }
 
-        // 4. Bottom Manual Cinema Dashboard
+        // 4. Bottom Manual Cinema Dashboard Pills
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -125,8 +155,8 @@ fun CinemaCameraScreen() {
         ) {
             CinemaPill(label = "FPS", value = "24.000", isLocked = true)
             CinemaPill(label = "SHUTTER", value = "180.0°", isLocked = true)
-            CinemaPill(label = "ISO", value = "100", isLocked = true)
-            CinemaPill(label = "WB", value = "5600K", isLocked = true)
+            CinemaPill(label = "ISO", value = "${cameraController.isoSensitivity}", isLocked = true)
+            CinemaPill(label = "WB", value = "${cameraController.kelvinTemperature}K", isLocked = true)
             CinemaPill(label = "CODEC", value = "HEVC 120M", isLocked = false)
         }
     }
